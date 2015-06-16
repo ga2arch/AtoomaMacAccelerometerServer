@@ -1,53 +1,54 @@
-import webapp2, json, cgi
+import webapp2, cgi
 
-from google.appengine.api import urlfetch
-from google.appengine.ext import ndb
-
-api_key = 'AIzaSyCVS7M926mJ74sRRBAxwhrph42r9a9LL2E'
-
-class User(ndb.Model):
-    google_id    = ndb.StringProperty()
-    gcm_token    = ndb.StringProperty()
-    status       = ndb.IntegerProperty()
+from models.users import User
+from utils.validate import *
 
 class Tokens(webapp2.RequestHandler):
     def post(self):
         id_token = cgi.escape(self.request.get('id_token'))
         gcm_token = cgi.escape(self.request.get('gcm_token'))
 
-        url = "https://www.googleapis.com/oauth2/v3/tokeninfo?id_token=" + id_token
-        google_id = json.loads(urlfetch.fetch(url).content)['sub']
+        google_id = validate_id_token(id_token)
 
-        user = User.query(User.google_id == google_id).get()
-        if user:
-            user.gcm_token = gcm_token
-            user.put()
+        if google_id:
+            user = User.query(User.google_id == google_id).get()
+            if user:
+                user.gcm_token = gcm_token
+                user.put()
+            else:
+                user = User(google_id=google_id, gcm_token=gcm_token, status=-1)
+                user.put()
+
+            self.response.status = 200
         else:
-            user = User(google_id=google_id, gcm_token=gcm_token, status=-1)
-            user.put()
+            self.response.status = 400
+            self.response.write(json.dumps(dict(error='invalid token')))
 
 class Tilted(webapp2.RequestHandler):
     def post(self):
         access_token = cgi.escape(self.request.get('access_token'))
+      
+        google_id = validate_access_token(access_token)
         
-        url = "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=" + access_token
-        google_id = json.loads(urlfetch.fetch(url).content)['sub']
+        if google_id:
+            user = User.query(User.google_id == google_id).get()
         
-        user = User.query(User.google_id == google_id).get()
-        
-        if user:
-            gcm_url = 'https://gcm-http.googleapis.com/gcm/send'
-            headers = { 'Authorization':'key='+api_key, 'Content-Type':'application/json'}
-            data = { 'data': {'status': 1 }, 'to': user.gcm_token }
+            if user:
+                gcm_url = 'https://gcm-http.googleapis.com/gcm/send'
+                headers = { 'Authorization':'key='+api_key, 'Content-Type':'application/json'}
+                data = { 'data': {'status': 1 }, 'to': user.gcm_token }
 
-            r = urlfetch.fetch(url=gcm_url,
-                    payload=json.dumps(data),
-                    method=urlfetch.POST,
-                    headers=headers)
-            print r.content
+                r = urlfetch.fetch(url=gcm_url,
+                        payload=json.dumps(data),
+                        method=urlfetch.POST,
+                        headers=headers)
+                print r.content
+            else:
+                self.response.status = 400
+                self.response.write(json.dumps(dict(error='no user')))
         else:
-            print "No User"
-            self.response.write('No user')
+            self.response.status = 400
+            self.response.write(json.dumps(dict(error='invalid token')))
 
 app = webapp2.WSGIApplication([
     ('/tokens', Tokens),
